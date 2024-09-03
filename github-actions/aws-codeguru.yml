@@ -1,0 +1,42 @@
+name: AWS CodeGuru Security
+
+on:
+  push:
+    branches:
+      - development
+
+permissions:
+  id-token: write
+  security-events: write
+  # required for workflows in private repositories
+  actions: read
+  contents: read
+
+jobs:
+  codeguru:
+    name: AWS CodeGuru Security
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          role-to-assume: arn:aws:iam::1234567890:role/CodeGuruSecurityGitHubAccessRole
+          aws-region: us-east-1
+          role-session-name: GitHubActionScript
+
+      - name: CodeGuru Security
+        uses: aws-actions/codeguru-security@v1
+        with:
+          aws_region: us-east-1
+          scan_name: demo-monorepo
+          analysis_type: All
+
+      - name: Print CodeGuru Security results
+        run: |
+          ls -l
+          cat codeguru-security-results.sarif.json
