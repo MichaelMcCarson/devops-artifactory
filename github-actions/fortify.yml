@@ -1,0 +1,88 @@
+name: Fortify SAST and FoD Scan
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  fortify-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Step 1 - Retrieve or Generate FoD Release ID
+      id: generate_release_id
+      run: |
+        FOD_ACCESS_TOKEN=$(curl -X POST "https://api.ams.fortify.com/oauth/token" \
+          -H "Content-Type: application/x-www-form-urlencoded" \
+          -d "client_id=${{ secrets.FOD_CLIENT_ID }}" \
+          -d "client_secret=${{ secrets.FOD_CLIENT_SECRET }}" \
+          -d "grant_type=client_credentials" | jq -r '.access_token')
+        
+        # Call the FoD API to create a release or retrieve existing release
+        RELEASE_ID=$(curl -X POST "https://api.ams.fortify.com/api/v3/releases" \
+          -H "Authorization: Bearer $FOD_ACCESS_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d '{
+              "applicationId": ${{ secrets.FOD_APPLICATION_ID },
+              "releaseName": "GitHub Release",
+              "releaseDescription": "Auto-generated release for GitHub Action",
+              "microserviceName": "default",
+              "sdlcStatusType": "Development",
+              "ownerId": ${{ secrets.FOD_OWNER_ID }
+            }' | jq -r '.releaseId')
+
+        echo "FOD_RELEASE_ID=$RELEASE_ID" >> $GITHUB_ENV
+    - name: Step 2 - Download Fortify ScanCentral Client
+      uses: fortify/gha-setup-scancentral-client@v2.0
+      with:
+        version: 22.1.0
+        client-auth-token: ${{ secrets.SCANCENTRAL_CLIENT_AUTH_TOKEN }} 
+
+    - name: Step 3 - Package Code for Scan
+      run: scancentral package -bt none -o package.zip
+
+    - name: Step 4 - Download Fortify on Demand Universal CI Tool
+      uses: fortify/gha-setup-fod-uploader@v1
+
+    - name: Step 5 - Perform SAST Scan
+      run: |
+        java -jar $FOD_UPLOAD_JAR \
+          -z package.zip \
+          -aurl $FOD_API_URL \
+          -purl $FOD_URL \
+          -rid "$FOD_RELEASE_ID" \
+          -tc "$FOD_TENANT" \
+          -uc "$FOD_USER" \
+          -up "$FOD_PAT" \
+          $FOD_UPLOADER_OPTS \
+          -n "$FOD_UPLOADER_NOTES"
+      env:
+        FOD_TENANT: ${{ secrets.FOD_TENANT_NAME }}         
+        FOD_USER: ${{ secrets.FOD_USER }}        
+        FOD_PAT: ${{ secrets.FOD_PERSONAL_ACCESS_TOKEN }} 
+        FOD_RELEASE_ID: "$FOD_RELEASE_ID"               
+        FOD_URL: "https://ams.fortify.com"       
+        FOD_API_URL: "https://api.ams.fortify.com" 
+        FOD_UPLOADER_OPTS: "-ep 2 -pp 0 -I 1 -apf" 
+        FOD_UPLOADER_NOTES: "Triggered by GitHub Actions" 
+
+    - name: Step 6 - Export Results in SARIF format
+      uses: fortify/gha-export-vulnerabilities@v1
+      with:
+        FOD_BASE_URL: "https://ams.fortify.com"  
+        FOD_TENANT: ${{ secrets.FOD_TENANT_NAME }}  
+        FOD_USER: ${{ secrets.FOD_USER }}        
+        FOD_PASSWORD: ${{ secrets.FOD_PASSWORD }} 
+        FOD_RELEASE_ID: "$FOD_RELEASE_ID"              
+
+    - name: Step 7 - Analyze SARIF Report
+      run: |
+        echo $GITHUB_SARIF
+        cp ./gh-fortify-sast.sarif $GITHUB_SARIF
